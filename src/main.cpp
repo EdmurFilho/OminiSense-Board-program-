@@ -84,13 +84,17 @@ void example_updateChannelMode() {
 }
 
 void example_disableChannel() {
-  // Disable any channel (fixed or I2C) without removing config
-  // Format: disableChannel(channel_number)
-  
   disableChannel(4);   // Disable fixed channel 4
   disableChannel(33);  // Disable I2C channel 33
   disableChannel(6);   // Disable SPI channel 6
 }
+
+void example_enableChannel() {
+  enableChannel(4);   // Enable fixed channel 4
+  enableChannel(33);  // Enable I2C channel 33
+  enableChannel(6);   // Enable SPI channel 6
+}
+
 
 // ============================================================================
 // SECTION 8: REMOVE I2C CHANNEL
