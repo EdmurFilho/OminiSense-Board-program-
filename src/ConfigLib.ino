@@ -21,12 +21,16 @@
 #define I2C_SDA 21
 #define I2C_SCL 22
 
+// Channel configuration
+#define MAX_FIXED_CHANNELS 30  // Change this to set how many fixed channels you have
+// I2C channels will start after this number
+
 const char* CONFIG_FILE = "/config.json";
 
 struct FixedChannel {
   int channel;
   int pin;
-  String mode;  // "DIGITAL", "ANALOG", "ONEWIRE"
+  String mode;  // "DIGITAL", "ANALOG", "ONEWIRE", "SPI"
   bool active;
 };
 
@@ -37,18 +41,10 @@ struct I2CChannel {
   bool active;
 };
 
-struct SPIChannel {
-  int channel;
-  int id;
-  int csPin;
-  bool active;
-};
-
 class ConfigManager {
 private:
   std::vector<FixedChannel> fixedChannels;
   std::vector<I2CChannel> i2cChannels;
-  std::vector<SPIChannel> spiChannels;
   
 public:
   bool begin() {
@@ -112,24 +108,6 @@ public:
       i2cChannels.push_back(ic);
     }
 
-    // Load SPI channels
-    spiChannels.clear();
-    JsonArray spi = doc["spi_channels"];
-    for (JsonObject ch : spi) {
-      SPIChannel sc;
-      sc.channel = ch["channel"];
-      sc.id = ch["id"];
-      sc.csPin = ch["cs_pin"];
-      sc.active = ch["active"];
-      spiChannels.push_back(sc);
-      
-      // Setup CS pin if active
-      if (sc.active) {
-        pinMode(sc.csPin, OUTPUT);
-        digitalWrite(sc.csPin, HIGH);
-      }
-    }
-
     Serial.println("Config loaded successfully");
     return true;
   }
@@ -157,16 +135,6 @@ public:
       obj["active"] = ch.active;
     }
 
-    // Save SPI channels
-    JsonArray spi = doc.createNestedArray("spi_channels");
-    for (const auto& ch : spiChannels) {
-      JsonObject obj = spi.add<JsonObject>();
-      obj["channel"] = ch.channel;
-      obj["id"] = ch.id;
-      obj["cs_pin"] = ch.csPin;
-      obj["active"] = ch.active;
-    }
-
     File file = SD.open(CONFIG_FILE, FILE_WRITE);
     if (!file) {
       Serial.println("Failed to open config file for writing");
@@ -187,6 +155,9 @@ public:
       pinMode(pin, INPUT);
     } else if (mode == "ONEWIRE") {
       pinMode(pin, INPUT);
+    } else if (mode == "SPI") {
+      pinMode(pin, OUTPUT);
+      digitalWrite(pin, HIGH);  // CS pin HIGH (inactive)
     }
   }
 
@@ -203,13 +174,6 @@ public:
     for (const auto& ch : i2cChannels) {
       if (ch.channel == channel && ch.active) {
         return "I2C";
-      }
-    }
-    
-    // Check SPI channels
-    for (const auto& ch : spiChannels) {
-      if (ch.channel == channel && ch.active) {
-        return "SPI";
       }
     }
     
@@ -236,16 +200,6 @@ public:
     return 0;
   }
 
-  // Get CS pin for SPI channel
-  int getChannelSPICS(int channel) {
-    for (const auto& ch : spiChannels) {
-      if (ch.channel == channel && ch.active) {
-        return ch.csPin;
-      }
-    }
-    return -1;
-  }
-
   std::vector<FixedChannel>& getFixedChannels() {
     return fixedChannels;
   }
@@ -254,8 +208,38 @@ public:
     return i2cChannels;
   }
 
-  std::vector<SPIChannel>& getSPIChannels() {
-    return spiChannels;
+  // Get count of active channels
+  int getActiveChannelCount() {
+    int count = 0;
+    
+    for (const auto& ch : fixedChannels) {
+      if (ch.active) count++;
+    }
+    
+    for (const auto& ch : i2cChannels) {
+      if (ch.active) count++;
+    }
+    
+    return count;
+  }
+
+  // Get list of all active channel numbers
+  std::vector<int> getActiveChannelList() {
+    std::vector<int> activeChannels;
+    
+    for (const auto& ch : fixedChannels) {
+      if (ch.active) {
+        activeChannels.push_back(ch.channel);
+      }
+    }
+    
+    for (const auto& ch : i2cChannels) {
+      if (ch.active) {
+        activeChannels.push_back(ch.channel);
+      }
+    }
+    
+    return activeChannels;
   }
 
   void printConfig() {
@@ -271,12 +255,6 @@ public:
       Serial.printf("  Channel %d: 0x%02X (%s)\n", 
         ch.channel, ch.address, ch.active ? "ACTIVE" : "DISABLED");
     }
-
-    Serial.println("\nSPI Channels:");
-    for (const auto& ch : spiChannels) {
-      Serial.printf("  Channel %d: CS Pin %d (%s)\n", 
-        ch.channel, ch.csPin, ch.active ? "ACTIVE" : "DISABLED");
-    }
     Serial.println("============================\n");
   }
 };
@@ -285,23 +263,22 @@ ConfigManager config;
 
 // ========== USER API FUNCTIONS ==========
 
-// Change fixed channel configuration (Digital, Analog, One-Wire)
-void updateChannel(int channel, String newMode, bool active) {
+// Change fixed channel mode (keeps current active state)
+void updateChannel(int channel, String newMode) {
   bool found = false;
   
   for (auto& ch : config.getFixedChannels()) {
     if (ch.channel == channel) {
       ch.mode = newMode;
-      ch.active = active;
       found = true;
       
-      // Update pin mode if active
-      if (active) {
+      // Update pin mode if channel is active
+      if (ch.active) {
         config.setupPin(ch.pin, newMode);
       }
       
-      Serial.printf("Channel %d updated: %s, %s\n", channel, newMode.c_str(), 
-                    active ? "ACTIVE" : "DISABLED");
+      Serial.printf("Channel %d updated: %s (%s)\n", channel, newMode.c_str(), 
+                    ch.active ? "ACTIVE" : "DISABLED");
       break;
     }
   }
@@ -315,6 +292,13 @@ void updateChannel(int channel, String newMode, bool active) {
 
 // Add I2C channel dynamically
 int addI2C(int channel, uint8_t address) {
+  // Validate channel number
+  if (channel <= MAX_FIXED_CHANNELS) {
+    Serial.printf("Error: I2C channel %d must be > %d (reserved for fixed channels)\n", 
+                  channel, MAX_FIXED_CHANNELS);
+    return -1;
+  }
+  
   I2CChannel ic;
   ic.channel = channel;
   ic.id = config.getI2CChannels().size();
@@ -344,39 +328,55 @@ void removeI2C(int channel) {
   }
 }
 
-// Add SPI channel dynamically
-int addSPI(int channel, int csPin) {
-  SPIChannel sc;
-  sc.channel = channel;
-  sc.id = config.getSPIChannels().size();
-  sc.csPin = csPin;
-  sc.active = true;
+// Disable any channel (fixed or I2C)
+void disableChannel(int channel) {
+  // Try fixed channels
+  for (auto& ch : config.getFixedChannels()) {
+    if (ch.channel == channel) {
+      ch.active = false;
+      config.saveConfig();
+      Serial.printf("Channel %d disabled\n", channel);
+      return;
+    }
+  }
   
-  // Setup CS pin
-  pinMode(csPin, OUTPUT);
-  digitalWrite(csPin, HIGH);
+  // Try I2C channels
+  for (auto& ch : config.getI2CChannels()) {
+    if (ch.channel == channel) {
+      ch.active = false;
+      config.saveConfig();
+      Serial.printf("I2C channel %d disabled\n", channel);
+      return;
+    }
+  }
   
-  config.getSPIChannels().push_back(sc);
-  config.saveConfig();
-  
-  Serial.printf("SPI Channel %d added: CS Pin %d\n", channel, csPin);
-  return sc.id;
+  Serial.printf("Channel %d not found\n", channel);
 }
 
-// Remove SPI channel
-void removeSPI(int channel) {
-  auto& channels = config.getSPIChannels();
-  
-  auto it = std::remove_if(channels.begin(), channels.end(),
-    [channel](const SPIChannel& ch) { return ch.channel == channel; });
-  
-  if (it != channels.end()) {
-    channels.erase(it, channels.end());
-    config.saveConfig();
-    Serial.printf("SPI Channel %d removed\n", channel);
-  } else {
-    Serial.printf("SPI Channel %d not found!\n", channel);
+// Enable any channel (fixed or I2C)
+void enableChannel(int channel) {
+  // Try fixed channels
+  for (auto& ch : config.getFixedChannels()) {
+    if (ch.channel == channel) {
+      ch.active = true;
+      config.setupPin(ch.pin, ch.mode);
+      config.saveConfig();
+      Serial.printf("Channel %d enabled\n", channel);
+      return;
+    }
   }
+  
+  // Try I2C channels
+  for (auto& ch : config.getI2CChannels()) {
+    if (ch.channel == channel) {
+      ch.active = true;
+      config.saveConfig();
+      Serial.printf("I2C channel %d enabled\n", channel);
+      return;
+    }
+  }
+  
+  Serial.printf("Channel %d not found\n", channel);
 }
 
 // Read sensor from any channel
@@ -421,6 +421,17 @@ float readChannel(int channel) {
       return -1;
     }
     
+  } else if (mode == "SPI") {
+    int csPin = config.getChannelPin(channel);
+    
+    // Example SPI read - modify based on your sensor protocol
+    digitalWrite(csPin, LOW);
+    byte value = SPI.transfer(0x00); // Read command varies by sensor
+    digitalWrite(csPin, HIGH);
+    
+    Serial.printf("Channel %d (SPI CS Pin %d): %d\n", channel, csPin, value);
+    return value;
+    
   } else if (mode == "I2C") {
     uint8_t address = config.getChannelI2CAddress(channel);
     
@@ -443,94 +454,15 @@ float readChannel(int channel) {
       Serial.printf("I2C error on Channel %d (0x%02X)\n", channel, address);
       return -1;
     }
-    
-  } else if (mode == "SPI") {
-    int csPin = config.getChannelSPICS(channel);
-    
-    // Example SPI read - modify based on your sensor protocol
-    digitalWrite(csPin, LOW);
-    byte value = SPI.transfer(0x00); // Read command varies by sensor
-    digitalWrite(csPin, HIGH);
-    
-    Serial.printf("Channel %d (SPI CS Pin %d): %d\n", channel, csPin, value);
-    return value;
   }
   
   return -1;
 }
 
-// ========== SETUP ==========
 void setup() {
-  Serial.begin(115200);
-  delay(1000);
-  Serial.println("\n=== ESP32-S3 Multi-Protocol Sensor Manager ===\n");
-
-  if (!config.begin()) {
-    Serial.println("Failed to initialize!");
-    return;
-  }
-
-  // Try to load existing config
-  if (!config.loadConfig()) {
-    Serial.println("No config found, creating default...");
-    
-    // Add your default fixed channels here
-    config.getFixedChannels().push_back({1, 2, "DIGITAL", true});
-    config.getFixedChannels().push_back({2, 4, "ANALOG", true});
-    config.getFixedChannels().push_back({3, 5, "ONEWIRE", true});
-    config.getFixedChannels().push_back({4, 15, "DIGITAL", true});
-    
-    config.saveConfig();
-  }
-
-  config.printConfig();
-
-  // Example: Add I2C sensors dynamically
-  Serial.println("\n>>> Example: Adding I2C sensors...");
-  addI2C(10, 0x3C);
-  addI2C(11, 0x68);
-  
-  // Example: Add SPI sensors dynamically
-  Serial.println("\n>>> Example: Adding SPI sensors...");
-  addSPI(20, 14);
-  addSPI(21, 27);
-  
-  config.printConfig();
-
-  // Example: Change a fixed channel
-  Serial.println("\n>>> Example: Changing Channel 2 to DIGITAL...");
-  updateChannel(2, "DIGITAL", true);
-  
-  config.printConfig();
-
-  Serial.println("\n=== Setup Complete ===\n");
+  // Your setup code here
 }
 
-// ========== LOOP ==========
 void loop() {
-  // Example: Read all active channels
-  Serial.println("\n>>> Reading all channels...");
-  
-  // Read fixed channels (Digital, Analog, One-Wire)
-  for (const auto& ch : config.getFixedChannels()) {
-    if (ch.active) {
-      readChannel(ch.channel);
-    }
-  }
-  
-  // Read I2C channels
-  for (const auto& ch : config.getI2CChannels()) {
-    if (ch.active) {
-      readChannel(ch.channel);
-    }
-  }
-  
-  // Read SPI channels
-  for (const auto& ch : config.getSPIChannels()) {
-    if (ch.active) {
-      readChannel(ch.channel);
-    }
-  }
-  
-  delay(2000);  // Read every 2 seconds
+  // Your loop code here
 }
