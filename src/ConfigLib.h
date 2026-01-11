@@ -10,6 +10,7 @@
 #include <Wire.h>
 #include <OneWire.h>
 #include <vector>
+#include <map>
 
 // SD Card SPI pins for ESP32-S3
 #define SD_CS 10
@@ -41,10 +42,20 @@ struct I2CChannel {
   bool active;
 };
 
+struct ChannelInfo {
+  String mode;
+  int pin;
+  uint8_t i2cAddress;
+  bool active;
+};
+
 class ConfigManager {
 private:
   std::vector<FixedChannel> fixedChannels;
   std::vector<I2CChannel> i2cChannels;
+  String wifiSSID;
+  String wifiPassword;
+  std::map<int, ChannelInfo> channelCache;  // Fast lookup cache
   
 public:
   bool begin() {
@@ -79,6 +90,13 @@ public:
       return false;
     }
 
+    // Load WiFi config
+    if (doc.containsKey("wifi")) {
+      wifiSSID = doc["wifi"]["ssid"].as<String>();
+      wifiPassword = doc["wifi"]["password"].as<String>();
+      Serial.println("WiFi config loaded");
+    }
+
     // Load fixed channels
     fixedChannels.clear();
     JsonArray fixed = doc["fixed_channels"];
@@ -109,11 +127,17 @@ public:
     }
 
     Serial.println("Config loaded successfully");
+    buildChannelCache();  // Rebuild cache after loading
     return true;
   }
 
   bool saveConfig() {
     JsonDocument doc;
+
+    // Save WiFi config
+    JsonObject wifi = doc.createNestedObject("wifi");
+    wifi["ssid"] = wifiSSID;
+    wifi["password"] = wifiPassword;
 
     // Save fixed channels
     JsonArray fixed = doc.createNestedArray("fixed_channels");
@@ -145,6 +169,7 @@ public:
     file.close();
     
     Serial.println("Config saved successfully");
+    buildChannelCache();  // Rebuild cache after saving
     return true;
   }
 
@@ -242,9 +267,89 @@ public:
     return activeChannels;
   }
 
+  // WiFi getters and setters
+  String getWiFiSSID() {
+    return wifiSSID;
+  }
+
+  String getWiFiPassword() {
+    return wifiPassword;
+  }
+
+  void setWiFiCredentials(String ssid, String password) {
+    wifiSSID = ssid;
+    wifiPassword = password;
+    Serial.println("WiFi credentials updated");
+  }
+
+  // Build fast lookup cache for all channels
+  void buildChannelCache() {
+    channelCache.clear();
+    
+    // Add fixed channels to cache
+    for (const auto& ch : fixedChannels) {
+      ChannelInfo info;
+      info.mode = ch.mode;
+      info.pin = ch.pin;
+      info.i2cAddress = 0;
+      info.active = ch.active;
+      channelCache[ch.channel] = info;
+    }
+    
+    // Add I2C channels to cache
+    for (const auto& ch : i2cChannels) {
+      ChannelInfo info;
+      info.mode = "I2C";
+      info.pin = 0;
+      info.i2cAddress = ch.address;
+      info.active = ch.active;
+      channelCache[ch.channel] = info;
+    }
+    
+    Serial.printf("Channel cache built: %d channels indexed\n", channelCache.size());
+  }
+
+  // Fast lookup: Get channel info from cache
+  bool getChannelInfo(int channel, ChannelInfo& info) {
+    auto it = channelCache.find(channel);
+    if (it != channelCache.end()) {
+      info = it->second;
+      return true;
+    }
+    return false;
+  }
+
+  // Fast lookup: Check if channel exists in cache
+  bool channelExists(int channel) {
+    return channelCache.find(channel) != channelCache.end();
+  }
+
+  // Fast lookup: Get mode from cache
+  String getChannelModeFast(int channel) {
+    auto it = channelCache.find(channel);
+    if (it != channelCache.end()) {
+      return it->second.mode;
+    }
+    return "NONE";
+  }
+
+  // Fast lookup: Check if channel is active from cache
+  bool isChannelActive(int channel) {
+    auto it = channelCache.find(channel);
+    if (it != channelCache.end()) {
+      return it->second.active;
+    }
+    return false;
+  }
+
   void printConfig() {
     Serial.println("\n=== Current Configuration ===");
-    Serial.println("Fixed Channels:");
+    
+    Serial.println("WiFi:");
+    Serial.printf("  SSID: %s\n", wifiSSID.c_str());
+    Serial.printf("  Password: %s\n", wifiPassword.length() > 0 ? "********" : "(not set)");
+    
+    Serial.println("\nFixed Channels:");
     for (const auto& ch : fixedChannels) {
       Serial.printf("  Channel %d: Pin %d - %s (%s)\n", ch.channel, ch.pin, 
                     ch.mode.c_str(), ch.active ? "ACTIVE" : "DISABLED");

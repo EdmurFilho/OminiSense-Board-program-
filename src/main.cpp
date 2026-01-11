@@ -558,3 +558,31 @@ void loop() {
   
   delay(5000);  // Read every 5 seconds
 }
+// Set WiFi credentials
+config.setWiFiCredentials("MyNetwork", "MyPassword");
+
+// Get WiFi credentials
+String ssid = config.getWiFiSSID();
+String password = config.getWiFiPassword();
+Serial.printf("WiFi SSID: %s, Password: %s\n", ssid.c_str(), password.c_str());
+
+// Build the cache (automatically called on load/save)
+config.buildChannelCache();
+
+// Fast lookup - get all channel info
+ChannelInfo info;
+if (config.getChannelInfo(channel, info)) {
+  // info.mode - "DIGITAL", "ANALOG", "SPI", "I2C", etc.
+  // info.pin - pin number (for fixed channels)
+  // info.i2cAddress - I2C address (for I2C channels)
+  // info.active - true/false
+}
+
+// Fast lookup - check if channel exists
+if (config.channelExists(31)) { ... }
+
+// Fast lookup - get mode only
+String mode = config.getChannelModeFast(5);
+
+// Fast lookup - check if active
+if (config.isChannelActive(10)) { ... }
