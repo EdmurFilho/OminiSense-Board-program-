@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "ConfigManager.h"
+#include "CaptivePortals.h"
 
 ConfigManager config;
 
@@ -19,7 +20,7 @@ void setup() {
   }
   
   config.buildChannelCache();
-  config.printConfigSummary();
+  config.printConfig();
 }
   // Your main loop code here
   // All channel operations are thread-safe and can be safely
