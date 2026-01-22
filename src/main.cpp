@@ -1,15 +1,20 @@
 #include <Arduino.h>
 #include "ConfigManager.h"
 #include "CaptivePortals.h"
+#include "WiFi.h"
 
 ConfigManager config;
+Gateway gateway("OMINISENSE_GATEWAY");
+RawValues monitor;
+
+void buildPayload();
+void onWiFiCredentials(String ssid, String password);
+float readChannel(int channelId);
 
 void setup()
 {
   Serial.begin(115200);
 
-  config.begin();
-  config.loadConfig();
   if (!config.begin())
   {
     Serial.println("ConfigManager initialization failed!");
@@ -23,40 +28,47 @@ void setup()
     while (1)
       ;
   }
-
-  config.buildChannelCache();
   config.printConfig();
-}
-// Your main loop code here
-// All channel operations are thread-safe and can be safely
-// called from multiple FreeRTOS tasks running on different cores
+  String ssid = config.getWiFiSSID();
+  String password = config.getWiFiPassword();
+  Serial.printf("WiFi SSID: %s\n", ssid.c_str());
+  Serial.printf("WiFi Password: %s\n", password.length() > 0 ? "********" : "(not set)");
 
-// Example: Query channel status safely from any task
-static unsigned long lastCheck = 0;
-if (millis() - lastCheck > 10000)
-{ // Every 10 seconds
-  lastCheck = millis();
-
-  int activeCount = config.getActiveChannelCount();
-  std::vector<int> activeChannels = config.getActiveChannelList();
-  Serial.printf("📊 Active channels: %d\n", activeCount);
-  Serial.printf("📊 Active list: %d\n", activeChannels);
-
-  if (config.channelExists(1))
+  WiFi.begin(ssid.c_str(), password.c_str());
+  for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++)
   {
-    ChannelInfo info = config.getChannelInfo(1);
-    if (info.valid)
-    {
-      Serial.printf("   Channel 1: %s, Pin %d,",
-                    info.active ? "ACTIVE" : "DISABLED",
-                    info.pin);
-    }
+    delay(500);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("\nWiFi connected!");
+    Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+  }
+  else
+  {
+    Serial.println("\nFailed to connect to WiFi. Starting Gateway...");
+    gateway.begin();
   }
 }
+void loop()
+{
+  gateway.handle();
+  gateway.onCredentials(onWiFiCredentials);
+  monitor.handle();
+  monitor.setDataCallback(BuildPayload);
+}
 
-delay(100);
-
-
+/*
+monitor.begin(false);               // Inicia em modo STA (conectado ao WiFi)
+monitor.begin(true);                // Inicia em modo AP (rede própria, IP 192.168.5.1)
+monitor.end();                      // Para o monitor
+monitor.handle();                   // Processa requisições (chame no loop)
+monitor.active();                   // Retorna true se ativo
+monitor.setDataCallback(funcao);    // Registra função que gera o JSON
+monitor.timeSinceLastRequest();     // Retorna tempo (ms) desde última requisição
+*/
 void onWiFiCredentials(String ssid, String password)
 {
   Serial.println("\n📡 Credenciais recebidas do Gateway");
@@ -83,22 +95,32 @@ void onWiFiCredentials(String ssid, String password)
     delay(500);
     Serial.print(".");
   }
-  gateway.onCredentials(onWiFiCredentials);
+}
 
-Gateway gateway("OMINISENSE_GATEWAY");
+String BuildPayload()
+{
+  std::vector<int> activeChannels = config.getActiveChannelList();
+  
+  JsonDocument doc;
+  
+  JsonArray channels = doc["channels"].to<JsonArray>();
+  
+  for (int channelId : activeChannels) {
+    JsonObject channelObj = channels.add<JsonObject>();
+    channelObj["id"] = channelId;
+    channelObj["val"] = readChannel(channelId);
+  }
+  
+  doc["timestamp"] = millis();
+  
+  String payload;
+  serializeJson(doc, payload);
+  
+  return payload;
+}
 
-gateway.begin();                    // Inicia o Gateway (porta 80, IP 192.168.4.1)
-gateway.end();                      // Para o Gateway
-gateway.handle();                   // Processa requisições (chame no loop)
-gateway.active();                   // Retorna true se ativo
-gateway.onCredentials(funcao);      // Registra callback para credenciais
-
-RawValues monitor;
-
-monitor.begin(false);               // Inicia em modo STA (conectado ao WiFi)
-monitor.begin(true);                // Inicia em modo AP (rede própria, IP 192.168.5.1)
-monitor.end();                      // Para o monitor
-monitor.handle();                   // Processa requisições (chame no loop)
-monitor.active();                   // Retorna true se ativo
-monitor.setDataCallback(funcao);    // Registra função que gera o JSON
-monitor.timeSinceLastRequest();     // Retorna tempo (ms) desde última requisição
+float readChannel(int channelId)
+{
+  // Simula a leitura do canal (substitua pela lógica real de leitura)
+  return random(0, 1024) / 10.24; // Retorna um valor entre 0.0 e 100.0
+}

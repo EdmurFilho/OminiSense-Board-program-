@@ -1652,6 +1652,7 @@ public:
 
     xSemaphoreGive(configMutex);
   }
+
 };
 
 // ========== GLOBAL INSTANCE ==========
