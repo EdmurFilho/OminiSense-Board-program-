@@ -7,6 +7,8 @@
 #include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 // ============================================
 // CONFIGURAÇÕES DE DEBUG
@@ -54,8 +56,20 @@ private:
     IPAddress netMsk;
     bool isActive;
     bool scanInProgress;
-    String networkOptions; 
+    String networkOptions;
+    TaskHandle_t taskHandle;
     void (*onCredentialsCallback)(String ssid, String password);
+
+    static void taskFunction(void* pvParameters) {
+        Gateway* gw = static_cast<Gateway*>(pvParameters);
+        while (gw->isActive) {
+            gw->dnsServer->processNextRequest();
+            gw->server->handleClient();
+            gw->checkScanComplete();
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        vTaskDelete(NULL);
+    }
 
     const char* PORTAL_HTML = R"rawliteral(
 <!DOCTYPE html>
@@ -175,7 +189,7 @@ select,input{width:100%;padding:12px;background:rgba(0,20,40,.8);border:2px soli
 public:
     Gateway(const char* ssid = "OMINISENSE_GATEWAY") 
         : ap_ssid(ssid), apIP(192,168,4,1), netMsk(255,255,255,0), 
-          isActive(false), scanInProgress(false), onCredentialsCallback(nullptr) {
+          isActive(false), scanInProgress(false), taskHandle(nullptr), onCredentialsCallback(nullptr) {
         server = new WebServer(80);
         dnsServer = new DNSServer();
         DEBUG_PRINT("Gateway inicializado");
@@ -219,6 +233,17 @@ public:
         
         server->begin();
         isActive = true;
+        
+        xTaskCreatePinnedToCore(
+            taskFunction,
+            "Gateway_Task",
+            4096,
+            this,
+            1,
+            &taskHandle,
+            0
+        );
+        
         DEBUG_PRINT("Gateway ativo em: " + WiFi.softAPIP().toString());
     }
 
@@ -226,6 +251,13 @@ public:
         if (!isActive) return;
         
         DEBUG_PRINT("Desligando Gateway...");
+        isActive = false;
+        
+        if (taskHandle != nullptr) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            taskHandle = nullptr;
+        }
+        
         server->stop();
         dnsServer->stop();
         
@@ -235,16 +267,7 @@ public:
         }
         
         WiFi.softAPdisconnect(true);
-        isActive = false;
         DEBUG_PRINT("Gateway desligado");
-    }
-
-    void handle() { 
-        if (isActive) { 
-            dnsServer->processNextRequest(); 
-            server->handleClient(); 
-            checkScanComplete();
-        } 
     }
 
     void onCredentials(void (*cb)(String, String)) { 
@@ -264,7 +287,17 @@ private:
     String (*getPayloadCallback)();
     IPAddress apIP;
     unsigned long lastRequestTime;
+    TaskHandle_t taskHandle;
     const unsigned long REQUEST_TIMEOUT = 10000;
+
+    static void taskFunction(void* pvParameters) {
+        RawValues* rv = static_cast<RawValues*>(pvParameters);
+        while (rv->isActive) {
+            rv->server->handleClient();
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        vTaskDelete(NULL);
+    }
 
     const char* MONITOR_HTML = R"rawliteral(
 <!DOCTYPE html>
@@ -411,7 +444,7 @@ private:
 
 public:
     RawValues() : isActive(false), getPayloadCallback(nullptr), 
-                  apIP(192,168,5,1), lastRequestTime(0) {
+                  apIP(192,168,5,1), lastRequestTime(0), taskHandle(nullptr) {
         server = new WebServer(80);
         DEBUG_PRINT("RawValues inicializado");
     }
@@ -460,6 +493,17 @@ public:
         
         server->begin();
         isActive = true;
+        
+        xTaskCreatePinnedToCore(
+            taskFunction,
+            "RawValues_Task",
+            4096,
+            this,
+            1,
+            &taskHandle,
+            0
+        );
+        
         DEBUG_PRINT("RawValues ativo");
     }
 
@@ -467,18 +511,18 @@ public:
         if (!isActive) return;
         
         DEBUG_PRINT("Desligando RawValues...");
+        isActive = false;
+        
+        if (taskHandle != nullptr) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            taskHandle = nullptr;
+        }
+        
         server->stop();
         if (WiFi.getMode() & WIFI_AP) {
             WiFi.softAPdisconnect(true);
         }
-        isActive = false;
         DEBUG_PRINT("RawValues desligado");
-    }
-
-    void handle() { 
-        if (isActive) {
-            server->handleClient(); 
-        }
     }
 
     void setDataCallback(String (*cb)()) { 

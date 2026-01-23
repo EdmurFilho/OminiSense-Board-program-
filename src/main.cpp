@@ -7,57 +7,43 @@ ConfigManager config;
 Gateway gateway("OMINISENSE_GATEWAY");
 RawValues monitor;
 
-void buildPayload();
+String BuildPayload();
 void onWiFiCredentials(String ssid, String password);
 float readChannel(int channelId);
+void SetupWifi(void *parameter);
+void GetPayload(void *parameter);
+String CheckMonitorQueue();
+
+TaskHandle_t wifiTaskHandle = NULL;
+TaskHandle_t payloadTaskHandle = NULL;
+ 
+JsonDocument doc1;
 
 void setup()
 {
+  xTaskCreatePinnedToCore(SetupWifi, "WiFiSetupTask", 8192, NULL, 1, &wifiTaskHandle, 0);
+     
+  xTaskCreatePinnedToCore(BuildPayload, "PayloadTask", 8192, NULL, 1, &payloadTaskHandle, 0);
+  
   Serial.begin(115200);
-
-  if (!config.begin())
-  {
-    Serial.println("ConfigManager initialization failed!");
-    while (1)
-      ;
-  }
-
-  if (!config.loadConfig())
-  {
-    Serial.println("Failed to load configuration!");
-    while (1)
-      ;
-  }
+  
+  Serial.println("\n Iniciando ConfigManager...");
+  config.begin();
+  Serial.println("\n Carregando Configuração...");
+  config.loadConfig();
+  Serial.println("\n Configuração atual:");
   config.printConfig();
-  String ssid = config.getWiFiSSID();
-  String password = config.getWiFiPassword();
-  Serial.printf("WiFi SSID: %s\n", ssid.c_str());
-  Serial.printf("WiFi Password: %s\n", password.length() > 0 ? "********" : "(not set)");
+  
+  Serial.println("\n Iniciando WiFi...");
+  SetupWifi(NULL);
+  gateway.onCredentials(onWiFiCredentials);
+  monitor.setDataCallback(GetPayload);
 
-  WiFi.begin(ssid.c_str(), password.c_str());
-  for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++)
-  {
-    delay(500);
-    Serial.print(".");
-  }
-
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    Serial.println("\nWiFi connected!");
-    Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
-  }
-  else
-  {
-    Serial.println("\nFailed to connect to WiFi. Starting Gateway...");
-    gateway.begin();
-  }
 }
 void loop()
 {
-  gateway.handle();
-  gateway.onCredentials(onWiFiCredentials);
-  monitor.handle();
-  monitor.setDataCallback(BuildPayload);
+
+  
 }
 
 /*
@@ -97,30 +83,60 @@ void onWiFiCredentials(String ssid, String password)
   }
 }
 
-String BuildPayload()
+void BuildPayload(void *parameter)
 {
   std::vector<int> activeChannels = config.getActiveChannelList();
   
-  JsonDocument doc;
-  
-  JsonArray channels = doc["channels"].to<JsonArray>();
-  
-  for (int channelId : activeChannels) {
+  doc1.clear();
+
+  JsonArray channels = doc1["channels"].to<JsonArray>();
+
+  for (int channelId : activeChannels)
+  {
     JsonObject channelObj = channels.add<JsonObject>();
     channelObj["id"] = channelId;
     channelObj["val"] = readChannel(channelId);
   }
-  
-  doc["timestamp"] = millis();
-  
-  String payload;
-  serializeJson(doc, payload);
-  
-  return payload;
+
+  doc1["timestamp"] = millis();
+  vTaskDelay(1000 / portTICK_PERIOD_MS);
 }
 
 float readChannel(int channelId)
 {
   // Simula a leitura do canal (substitua pela lógica real de leitura)
   return random(0, 1024) / 10.24; // Retorna um valor entre 0.0 e 100.0
+}
+
+void SetupWifi(void *parameter)
+{
+  String ssid = config.getWiFiSSID();
+  String password = config.getWiFiPassword();
+  Serial.printf("WiFi SSID: %s\n", ssid.c_str());
+  Serial.printf("WiFi Password: %s\n", password.length() > 0 ? "********" : "(not set)");
+
+  WiFi.begin(ssid.c_str(), password.c_str());
+  for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++)
+  {
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("\nWiFi connected!");
+    Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+  }
+  else
+  {
+    Serial.println("\nFailed to connect to WiFi. Starting Gateway...");
+    gateway.begin();
+  }
+}
+
+String GetPayload()
+{
+  String payload;
+  serializeJson(doc1, payload);
+  return payload;
 }
